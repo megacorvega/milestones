@@ -1,11 +1,150 @@
+import os
+import sys
+import subprocess
+import threading
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog, colorchooser
 from datetime import datetime, timedelta
 import json
-import os
 import uuid
 import re
-from PIL import ImageGrab # Requires: pip install Pillow
+
+# =======================================================================
+# --- Setup & Bootstrapper ---
+# =======================================================================
+
+def requires_setup():
+    """Returns True if we are outside a venv OR missing required libraries."""
+    if sys.prefix == sys.base_prefix:
+        return True
+    try:
+        import PIL
+        import tkcalendar
+        return False
+    except ImportError:
+        return True
+
+def run_setup_window_and_relaunch():
+    """Shows a console UI, creates the venv, installs packages, and relaunches."""
+    import venv
+    
+    root = tk.Tk()
+    root.title("Milestones Setup")
+    root.geometry("550x350")
+    
+    # Center the setup window on the screen
+    root.update_idletasks()
+    x = (root.winfo_screenwidth() // 2) - (550 // 2)
+    y = (root.winfo_screenheight() // 2) - (350 // 2)
+    root.geometry(f"+{x}+{y}")
+    
+    tk.Label(root, text="Initializing Environment & Dependencies", font=("Arial", 12, "bold")).pack(pady=10)
+    
+    # Terminal-like text output log
+    log_text = tk.Text(root, state='disabled', bg="#1e1e1e", fg="#4af626", font=("Consolas", 10))
+    log_text.pack(padx=15, pady=(0, 15), fill=tk.BOTH, expand=True)
+    
+    def log(msg):
+        """Safely pushes log updates to the UI thread."""
+        def _log():
+            try:
+                log_text.config(state='normal')
+                log_text.insert(tk.END, msg + "\n")
+                log_text.see(tk.END)
+                log_text.config(state='disabled')
+            except tk.TclError:
+                pass # Window was destroyed
+        root.after(0, _log)
+
+    # Handle graceful exit if the user closes the setup window mid-install
+    process_ref = []
+    def on_closing():
+        if process_ref and process_ref[0].poll() is None:
+            try: process_ref[0].terminate()
+            except: pass
+        root.destroy()
+        sys.exit(0)
+        
+    root.protocol("WM_DELETE_WINDOW", on_closing)
+
+    def setup_thread():
+        app_dir = os.path.dirname(os.path.abspath(__file__))
+        venv_dir = os.path.join(app_dir, "venv")
+        
+        # Determine correct python paths for the new venv based on OS
+        if os.name == 'nt':
+            venv_python = os.path.join(venv_dir, "Scripts", "python.exe")
+            venv_pythonw = os.path.join(venv_dir, "Scripts", "pythonw.exe")
+            if not os.path.exists(venv_pythonw):
+                venv_pythonw = venv_python
+        else:
+            venv_python = os.path.join(venv_dir, "bin", "python")
+            venv_pythonw = venv_python
+
+        # 1. Ensure Venv exists
+        if not os.path.exists(venv_dir):
+            log("Creating virtual environment (venv)...")
+            log("This may take a minute. Please wait.")
+            try:
+                venv.create(venv_dir, with_pip=True)
+                log("Virtual environment successfully created.\n")
+            except Exception as e:
+                log(f"ERROR: Failed to create venv:\n{e}")
+                return
+        else:
+            log("Virtual environment found.\n")
+
+        # 2. Install dependencies
+        log("Checking and downloading required libraries (Pillow, tkcalendar)...")
+        kwargs = {}
+        if os.name == 'nt':
+            kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
+            
+        try:
+            process = subprocess.Popen(
+                [venv_python, "-m", "pip", "install", "Pillow", "tkcalendar"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                **kwargs
+            )
+            process_ref.append(process)
+            
+            # Pipe the PIP console output directly to our text widget
+            for line in process.stdout:
+                log(line.strip())
+                    
+            process.wait()
+            
+            if process.returncode == 0:
+                log("\n--- Setup Complete! ---")
+                log("Starting application...")
+                
+                def launch_and_close():
+                    subprocess.Popen([venv_pythonw, os.path.abspath(__file__)] + sys.argv[1:])
+                    root.destroy()
+                
+                root.after(1500, launch_and_close)
+            else:
+                log("\nERROR: Failed to install dependencies. Please check your internet connection.")
+        except Exception as e:
+            log(f"\nERROR: Subprocess failed:\n{e}")
+
+    # Start the background installation thread so the UI doesn't freeze
+    threading.Thread(target=setup_thread, daemon=True).start()
+    root.mainloop()
+
+# Run the bootstrapper and kill the base process so the venv process can take over
+if requires_setup():
+    run_setup_window_and_relaunch()
+    sys.exit(0)
+
+# =======================================================================
+# --- Main Application Logic (Guaranteed to run inside configured venv) ---
+# =======================================================================
+
+from PIL import ImageGrab
+from tkcalendar import Calendar
 
 SESSION_FILE = "session.json"
 
@@ -31,7 +170,7 @@ class ProjectTab(tk.Frame):
         self.drag_data = {"item": None, "x": 0, "task_idx": None, "mode": None}
         self.tooltip = None
         self.edge_margin = 10 
-        self.resize_timer = None # For debouncing window resizes
+        self.resize_timer = None 
         
         self.setup_ui()
 
@@ -81,7 +220,8 @@ class ProjectTab(tk.Frame):
         self.canvas.bind("<B1-Motion>", self.on_drag_motion)
         self.canvas.bind("<ButtonRelease-1>", self.on_drag_stop)
         self.canvas.bind("<Double-Button-1>", self.on_double_click)
-        self.canvas.bind("<Configure>", self.on_resize) # Trigger redraw on resize
+        self.canvas.bind("<Configure>", self.on_resize) 
+        self.canvas.tag_bind("date_text", "<Button-1>", self.on_date_click)
 
     # --- File & Tab Operations ---
     def get_app_dir(self): return os.path.dirname(os.path.abspath(__file__))
@@ -195,7 +335,7 @@ class ProjectTab(tk.Frame):
             self.end_date = datetime.strptime(self.end_entry.get(), "%Y-%m-%d")
             if self.end_date <= self.start_date: raise ValueError()
             self.draw_chart()
-        except ValueError: messagebox.showerror("Date Error", "Format YYYY-MM-DD. End must be after Start.", parent=self)
+        except ValueError: messagebox.showerror("Date Error", "Format YYYY-MM-DD.\nEnd must be after Start.", parent=self)
 
     def resolve_dependencies(self):
         task_map = {t["id"]: t for t in self.milestones}
@@ -268,6 +408,11 @@ class ProjectTab(tk.Frame):
             
             y1, y2 = y_offset + 5, y_offset + self.row_height - 5
             self.canvas.create_rectangle(x1, y1, x2, y2, fill=task["color"], outline="gray", tags=("bar", f"task_{idx}"))
+            
+            # Calculate and display the end date to the right of the bar
+            task_end_date = task["start"] + timedelta(days=task["days"])
+            self.canvas.create_text(x2 + 8, y_offset + self.row_height/2, text=task_end_date.strftime("%m/%d/%y"), anchor=tk.W, font=("Arial", 9), fill="#555", tags=("date_text", f"date_{idx}"))
+
             task_coords[task["id"]] = {"x1": x1, "x2": x2, "y1": y1, "y2": y2}
             y_offset += self.row_height
             
@@ -292,6 +437,8 @@ class ProjectTab(tk.Frame):
             self.canvas.config(cursor="sb_h_double_arrow" if abs(event.x - x1) < self.edge_margin or abs(event.x - x2) < self.edge_margin else "fleur")
         elif item and "label" in self.canvas.gettags(item[0]):
              self.canvas.config(cursor="sb_v_double_arrow") 
+        elif item and "date_text" in self.canvas.gettags(item[0]):
+             self.canvas.config(cursor="hand2")
         else: self.canvas.config(cursor="")
 
     def on_drag_start(self, event):
@@ -397,6 +544,50 @@ class ProjectTab(tk.Frame):
             if tag.startswith("task_"):
                 self.open_milestone_dialog(int(tag.split("_")[1]))
                 break
+
+    def on_date_click(self, event):
+        item = self.canvas.find_withtag("current")
+        if not item: return
+        tags = self.canvas.gettags(item[0])
+        
+        for tag in tags:
+            if tag.startswith("date_"):
+                task_idx = int(tag.split("_")[1])
+                self.open_calendar_dialog(task_idx)
+                break
+
+    def open_calendar_dialog(self, task_idx):
+        task = self.milestones[task_idx]
+        current_end = task["start"] + timedelta(days=task["days"])
+
+        dialog = tk.Toplevel(self)
+        dialog.title(f"Set End Date: {task['name']}")
+        dialog.geometry(f"280x250+{self.winfo_rootx() + self.winfo_width()//2 - 140}+{self.winfo_rooty() + self.winfo_height()//2 - 125}")
+        dialog.transient(self)
+        dialog.grab_set()
+
+        cal = Calendar(dialog, selectmode='day', year=current_end.year, month=current_end.month, day=current_end.day)
+        cal.pack(pady=10, padx=10, fill="both", expand=True)
+
+        def save_date():
+            selected_date = cal.selection_get() 
+            new_end_datetime = datetime.combine(selected_date, datetime.min.time())
+            
+            if new_end_datetime <= task["start"]:
+                messagebox.showwarning("Invalid Date", "The end date must be after the start date.", parent=dialog)
+                return
+            
+            new_days = (new_end_datetime - task["start"]).total_seconds() / 86400.0
+            self.milestones[task_idx]["days"] = new_days
+            
+            self.resolve_dependencies()
+            self.draw_chart()
+            dialog.destroy()
+
+        btn_frame = tk.Frame(dialog)
+        btn_frame.pack(pady=5)
+        tk.Button(btn_frame, text="Save", command=save_date, width=10, bg="#dff0d8").pack(side=tk.LEFT, padx=5)
+        tk.Button(btn_frame, text="Cancel", command=dialog.destroy, width=10).pack(side=tk.LEFT, padx=5)
 
     def open_milestone_dialog(self, task_idx=None):
         dialog = tk.Toplevel(self)
