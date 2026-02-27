@@ -8,6 +8,20 @@ from datetime import datetime, timedelta
 import json
 import uuid
 import re
+import ctypes
+
+try:
+    from PIL import ImageGrab, Image # Import Image for high-quality resizing
+except ImportError:
+    ImageGrab = None
+    Image = None
+
+# --- Make Tkinter Crisp on High-DPI Displays (Windows) ---
+try:
+    # Tell Windows this app is DPI-aware so it doesn't blur/stretch it
+    ctypes.windll.shcore.SetProcessDpiAwareness(1)
+except Exception:
+    pass # Fails safely on Mac/Linux or older Windows versions
 
 # =======================================================================
 # --- Setup & Bootstrapper ---
@@ -143,8 +157,16 @@ if requires_setup():
 # --- Main Application Logic (Guaranteed to run inside configured venv) ---
 # =======================================================================
 
-from PIL import ImageGrab
-from tkcalendar import Calendar
+try:
+    from PIL import ImageGrab, Image
+except ImportError:
+    ImageGrab = None
+    Image = None
+
+try:
+    from tkcalendar import Calendar
+except ImportError:
+    Calendar = None
 
 SESSION_FILE = "session.json"
 
@@ -298,6 +320,10 @@ class ProjectTab(tk.Frame):
             messagebox.showerror("Error", f"Failed to load {path}:\n{e}", parent=self)
 
     def export_png(self):
+        if ImageGrab is None or Image is None:
+            messagebox.showerror("Missing Library", "The 'Pillow' library is required to export images.", parent=self)
+            return
+
         proj_name = self.get_clean_project_name()
         app_dir = self.get_app_dir()
         base_img_path = os.path.join(app_dir, f"{proj_name}.png")
@@ -309,15 +335,27 @@ class ProjectTab(tk.Frame):
             os.rename(base_img_path, os.path.join(archive_dir, f"{proj_name}_{timestamp}.png"))
 
         self.update_idletasks()
-        x, y = self.canvas.winfo_rootx(), self.canvas.winfo_rooty()
-        x1 = x + self.canvas.winfo_width()
         
-        # Auto-crop logic using tracked content height
-        img_height = getattr(self, 'content_height', 200) 
-        y1 = y + img_height
-        
+        # We need to find the "real" coordinates on a high-DPI screen
         try:
-            ImageGrab.grab(bbox=(x, y, x1, y1)).save(base_img_path)
+            # On High-DPI, winfo_rootx/y might return scaled values. 
+            # We grab the raw screen capture first:
+            x, y = self.canvas.winfo_rootx(), self.canvas.winfo_rooty()
+            w, h = self.canvas.winfo_width(), getattr(self, 'content_height', 200)
+            
+            # Use a higher scale factor for professional results
+            scale_factor = 2 # 2x is usually plenty once the window is sharp
+            
+            img = ImageGrab.grab(bbox=(x, y, x + w, y + h))
+            
+            if scale_factor > 1:
+                new_size = (int(img.width * scale_factor), int(img.height * scale_factor))
+                # LANCZOS is the highest quality filter for smoothing edges
+                img = img.resize(new_size, Image.Resampling.LANCZOS)
+            
+            # Saving with a high DPI metadata helps with print quality
+            img.save(base_img_path, dpi=(300, 300))
+            
             log_path = os.path.join(app_dir, f"{proj_name}.changelog")
             with open(log_path, "a") as log_file:
                 log_file.write(f"--- Export Triggered: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ---\n")
