@@ -1,5 +1,9 @@
-# User project file
+# User data
 *.projects
+archive/
+session.json
+*.png
+*.changelog
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
