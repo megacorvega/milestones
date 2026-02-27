@@ -456,7 +456,7 @@ class GanttApp(tk.Tk):
     """The main application wrapper managing tabs and session data."""
     def __init__(self):
         super().__init__()
-        self.title("Advanced Project Scheduler v2.1")
+        self.title("Milestones v0.1")
         self.geometry("1150x650")
         
         self.protocol("WM_DELETE_WINDOW", self.on_closing)
