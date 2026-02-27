@@ -19,6 +19,7 @@ class ProjectTab(tk.Frame):
         
         # --- Default Data ---
         self.project_name = "New Project"
+        self.chart_title = "Project Timeline"
         self.start_date = datetime(2025, 1, 1)
         self.end_date = datetime(2026, 12, 30)
         self.milestones = [
@@ -63,6 +64,15 @@ class ProjectTab(tk.Frame):
         self.project_name_entry.insert(0, self.project_name)
         self.project_name_entry.pack(side=tk.RIGHT, padx=(0, 5))
         tk.Label(top_frame, text="Project Name:").pack(side=tk.RIGHT)
+        
+        # --- NEW: Add Chart Title Input ---
+        self.chart_title_entry = tk.Entry(top_frame, width=25)
+        self.chart_title_entry.insert(0, self.chart_title)
+        self.chart_title_entry.pack(side=tk.RIGHT, padx=(0, 15))
+        tk.Label(top_frame, text="Display Title:").pack(side=tk.RIGHT)
+        
+        # Bind typing events so the canvas redraws as you type
+        self.chart_title_entry.bind("<KeyRelease>", self.on_resize)
 
         # --- Canvas ---
         self.canvas = tk.Canvas(self, bg="white")
@@ -98,6 +108,7 @@ class ProjectTab(tk.Frame):
         
         data = {
             "project_name": self.project_name_entry.get(),
+            "chart_title": self.chart_title_entry.get(), # <-- NEW: Save the chart title
             "start_date": self.start_date.strftime("%Y-%m-%d"), 
             "end_date": self.end_date.strftime("%Y-%m-%d"), 
             "milestones": []
@@ -123,6 +134,12 @@ class ProjectTab(tk.Frame):
             self.project_name_entry.delete(0, tk.END)
             self.project_name_entry.insert(0, p_name)
             self.notebook.tab(self, text=p_name)
+            
+            # --- NEW: Load chart title ---
+            c_title = data.get("chart_title", "Project Timeline")
+            self.chart_title_entry.delete(0, tk.END)
+            self.chart_title_entry.insert(0, c_title)
+            # -----------------------------
             
             self.start_date = datetime.strptime(data["start_date"], "%Y-%m-%d")
             self.end_date = datetime.strptime(data["end_date"], "%Y-%m-%d")
@@ -220,22 +237,31 @@ class ProjectTab(tk.Frame):
         if self.total_days <= 0: self.total_days = 1
         self.pixels_per_day = self.chart_width / self.total_days
         
+        # --- NEW: Draw the title onto the canvas ---
+        title_text = self.chart_title_entry.get()
+        self.canvas.create_text(width / 2, 25, text=title_text, font=("Arial", 16, "bold"), fill="#333")
+        y_shift = 40 # Amount to shift the chart down
+        # -------------------------------------------
+        
         num_grid_lines = 6
         for i in range(num_grid_lines + 1):
             x = self.chart_x + (self.chart_width / num_grid_lines) * i
             grid_date = self.start_date + timedelta(days=(self.total_days / num_grid_lines) * i)
-            self.canvas.create_line(x, 20, x, height, fill="#e0e0e0", dash=(4, 4))
-            self.canvas.create_text(x, 15, text=grid_date.strftime("%m/%d/%y"), anchor=tk.S, fill="#555")
+            # Add y_shift to Y coordinates
+            self.canvas.create_line(x, 20 + y_shift, x, height, fill="#e0e0e0", dash=(4, 4))
+            self.canvas.create_text(x, 15 + y_shift, text=grid_date.strftime("%m/%d/%y"), anchor=tk.S, fill="#555")
 
         today = datetime.now()
         if self.start_date <= today <= self.end_date:
             exact_days_today = (today - self.start_date).total_seconds() / 86400.0
             today_x = self.chart_x + (exact_days_today * self.pixels_per_day)
-            self.canvas.create_line(today_x, 20, today_x, height, fill="#d9534f", dash=(2, 2), width=2)
+            # Add y_shift to Y coordinates
+            self.canvas.create_line(today_x, 20 + y_shift, today_x, height, fill="#d9534f", dash=(2, 2), width=2)
             self.canvas.create_text(today_x, height - 10, text="Today", fill="#d9534f", font=("Arial", 8, "bold"))
 
         task_coords = {}
-        y_offset = 40
+        # Update starting offset for task bars from 40 to 80 (40 + y_shift)
+        y_offset = 80
         for idx, task in enumerate(self.milestones):
             self.canvas.create_text(self.label_width - 10, y_offset + self.row_height/2, text=task["name"], 
                                     anchor=tk.E, font=("Arial", 10), width=self.label_width - 20, 
@@ -303,8 +329,9 @@ class ProjectTab(tk.Frame):
         
         if mode == "reorder":
             self.canvas.delete("drop_line")
-            row_idx = max(0, min(int((event.y - 40) / self.row_height), len(self.milestones))) 
-            line_y = 40 + row_idx * self.row_height
+            # Change event.y offset from 40 to 80
+            row_idx = max(0, min(int((event.y - 80) / self.row_height), len(self.milestones))) 
+            line_y = 80 + row_idx * self.row_height # Change base Y from 40 to 80
             self.canvas.create_line(10, line_y, self.chart_x + self.chart_width, line_y, fill="blue", dash=(4, 4), tags="drop_line", width=2)
             return
 
@@ -349,7 +376,8 @@ class ProjectTab(tk.Frame):
         
         if mode == "reorder":
             self.canvas.delete("drop_line")
-            row_idx = max(0, min(int((event.y - 40) / self.row_height), len(self.milestones)))
+            # Change event.y offset from 40 to 80
+            row_idx = max(0, min(int((event.y - 80) / self.row_height), len(self.milestones)))
             old_idx = self.drag_data["task_idx"]
             if row_idx > old_idx: row_idx -= 1 
             if old_idx != row_idx:
