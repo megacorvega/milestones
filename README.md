@@ -1,4 +1,4 @@
-# Advanced Project Scheduler
+# Milestones
 
 A lightweight, standalone Python application for creating and managing visual project schedules (Gantt charts). Built with Python's `tkinter` library, it offers a highly interactive drag-and-drop interface, task dependencies, and automated export tools without the bloat of traditional enterprise project management software.
 
