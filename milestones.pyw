@@ -109,7 +109,7 @@ def run_setup_window_and_relaunch():
             log("Virtual environment found.\n")
 
         # 2. Install dependencies
-        log("Checking and downloading required libraries (Pillow, tkcalendar)...")
+        log("Checking required packages (Pillow, tkcalendar)...")
         kwargs = {}
         if os.name == 'nt':
             kwargs['creationflags'] = subprocess.CREATE_NO_WINDOW
@@ -124,13 +124,12 @@ def run_setup_window_and_relaunch():
             )
             process_ref.append(process)
             
-            # Pipe the PIP console output directly to our text widget
-            for line in process.stdout:
-                log(line.strip())
-                    
+            # REMOVED: The for loop that piped pip's output to the log.
+            # Now we just wait for the silent installation to finish.
             process.wait()
             
             if process.returncode == 0:
+                log("Packages verified successfully!")
                 log("\n--- Setup Complete! ---")
                 log("Starting application...")
                 
@@ -140,7 +139,9 @@ def run_setup_window_and_relaunch():
                 
                 root.after(1500, launch_and_close)
             else:
-                log("\nERROR: Failed to install dependencies. Please check your internet connection.")
+                # If it fails, we can pull the error from stdout so the user knows what went wrong
+                error_output = process.stdout.read()
+                log(f"\nERROR: Failed to install dependencies. Please check your internet connection.\nDetails:\n{error_output}")
         except Exception as e:
             log(f"\nERROR: Subprocess failed:\n{e}")
 
@@ -320,41 +321,136 @@ class ProjectTab(tk.Frame):
             messagebox.showerror("Error", f"Failed to load {path}:\n{e}", parent=self)
 
     def export_png(self):
-        if ImageGrab is None or Image is None:
+        if Image is None:
             messagebox.showerror("Missing Library", "The 'Pillow' library is required to export images.", parent=self)
             return
+
+        from PIL import ImageDraw, ImageFont
 
         proj_name = self.get_clean_project_name()
         app_dir = self.get_app_dir()
         base_img_path = os.path.join(app_dir, f"{proj_name}.png")
         archive_dir = os.path.join(app_dir, "archive")
         
+        # 1. Archive previous exports
         if os.path.exists(base_img_path):
             if not os.path.exists(archive_dir): os.makedirs(archive_dir)
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             os.rename(base_img_path, os.path.join(archive_dir, f"{proj_name}_{timestamp}.png"))
 
-        self.update_idletasks()
-        
-        # We need to find the "real" coordinates on a high-DPI screen
         try:
-            # On High-DPI, winfo_rootx/y might return scaled values. 
-            # We grab the raw screen capture first:
-            x, y = self.canvas.winfo_rootx(), self.canvas.winfo_rooty()
-            w, h = self.canvas.winfo_width(), getattr(self, 'content_height', 200)
+            # 2. Setup high-resolution Pillow Image (3x scale for crispness)
+            scale = 3  
+            width = self.canvas.winfo_width()
+            if width < 100: width = 1100
+            height = getattr(self, 'content_height', 200)
             
-            # Use a higher scale factor for professional results
-            scale_factor = 2 # 2x is usually plenty once the window is sharp
+            # Create a blank white canvas in memory
+            img = Image.new('RGB', (int(width * scale), int(height * scale)), color='white')
+            draw = ImageDraw.Draw(img)
             
-            img = ImageGrab.grab(bbox=(x, y, x + w, y + h))
+            # Helper function to scale coordinates
+            def s(val): return val * scale
+
+            # Attempt to load standard system fonts (Windows, Mac, Linux)
+            font_paths = ["arial.ttf", "Arial.ttf", "segoeui.ttf", "Helvetica.ttc", "LiberationSans-Regular.ttf"]
+            font_title = font_normal = font_small = None
+            for fp in font_paths:
+                try:
+                    font_title = ImageFont.truetype(fp, int(s(16)))
+                    font_normal = ImageFont.truetype(fp, int(s(10)))
+                    font_small = ImageFont.truetype(fp, int(s(8)))
+                    break
+                except IOError: continue
             
-            if scale_factor > 1:
-                new_size = (int(img.width * scale_factor), int(img.height * scale_factor))
-                # LANCZOS is the highest quality filter for smoothing edges
-                img = img.resize(new_size, Image.Resampling.LANCZOS)
+            # Fallback if no standard fonts are found
+            if not font_title:
+                font_title = font_normal = font_small = ImageFont.load_default()
+
+            # --- 3. Draw the Chart Elements ---
+            label_width = 170
+            chart_x = label_width
+            chart_width = width - label_width - 50 
             
-            # Saving with a high DPI metadata helps with print quality
-            img.save(base_img_path, dpi=(300, 300))
+            total_days = (self.end_date - self.start_date).days
+            if total_days <= 0: total_days = 1
+            pixels_per_day = chart_width / total_days
+            
+            # Draw Title
+            title_text = self.chart_title_entry.get()
+            draw.text((s(width / 2), s(25)), title_text, font=font_title, fill="#333", anchor="mm")
+            
+            y_shift = 40
+            
+            # Draw Grid Lines
+            num_grid_lines = 6
+            for i in range(num_grid_lines + 1):
+                x = chart_x + (chart_width / num_grid_lines) * i
+                grid_date = self.start_date + timedelta(days=(total_days / num_grid_lines) * i)
+                # Pillow doesn't do dashed lines easily, so we use a clean, solid light gray line instead
+                draw.line([(s(x), s(20 + y_shift)), (s(x), s(height))], fill="#e8e8e8", width=int(s(1)))
+                draw.text((s(x), s(15 + y_shift)), grid_date.strftime("%m/%d/%y"), font=font_normal, fill="#555", anchor="md")
+
+            # Draw "Today" Marker
+            today = datetime.now()
+            if self.start_date <= today <= self.end_date:
+                exact_days_today = (today - self.start_date).total_seconds() / 86400.0
+                today_x = chart_x + (exact_days_today * pixels_per_day)
+                draw.line([(s(today_x), s(20 + y_shift)), (s(today_x), s(height))], fill="#d9534f", width=int(s(2)))
+                draw.text((s(today_x), s(height - 10)), "Today", font=font_small, fill="#d9534f", anchor="mm")
+
+            # Draw Tasks
+            task_coords = {}
+            y_offset = 80
+            for idx, task in enumerate(self.milestones):
+                # Task Name
+                draw.text((s(label_width - 10), s(y_offset + self.row_height/2)), task["name"], font=font_normal, fill="black", anchor="rm")
+                
+                # Math for Coordinates
+                exact_days_from_start = (task["start"] - self.start_date).total_seconds() / 86400.0
+                x1 = chart_x + (exact_days_from_start * pixels_per_day)
+                x2 = x1 + (task["days"] * pixels_per_day)
+                
+                if x1 < chart_x: x1 = chart_x
+                if x2 > chart_x + chart_width: x2 = chart_x + chart_width
+                y1, y2 = y_offset + 5, y_offset + self.row_height - 5
+                
+                # Draw Bar Rectangle
+                draw.rectangle([s(x1), s(y1), s(x2), s(y2)], fill=task["color"], outline="gray", width=int(s(1)))
+                
+                # Draw End Date
+                task_end_date = task["start"] + timedelta(days=task["days"])
+                draw.text((s(x2 + 8), s(y_offset + self.row_height/2)), task_end_date.strftime("%m/%d/%y"), font=font_normal, fill="#555", anchor="lm")
+
+                task_coords[task["id"]] = {"x1": x1, "x2": x2, "y1": y1, "y2": y2}
+                y_offset += self.row_height
+
+            # Draw Dependencies
+            for task in self.milestones:
+                if task.get("depends_on") and task["depends_on"] in task_coords:
+                    parent, child = task_coords[task["depends_on"]], task_coords[task["id"]]
+                    p_x, p_y = max(parent["x1"] + 5, parent["x2"] - 15), parent["y2"]
+                    c_x, c_y = child["x1"], child["y1"] + (child["y2"] - child["y1"]) / 2
+                    
+                    if c_y >= p_y:
+                        points = [(s(p_x), s(p_y)), (s(p_x), s(c_y)), (s(c_x), s(c_y))]
+                    else:
+                        points = [(s(p_x), s(p_y)), (s(p_x), s(p_y + 10)), (s(c_x - 15), s(p_y + 10)), (s(c_x - 15), s(c_y)), (s(c_x), s(c_y))]
+                    
+                    # Routing Line
+                    draw.line(points, fill="#555555", width=int(s(2)))
+                    
+                    # Arrowhead (Triangle)
+                    draw.polygon([
+                        (s(c_x), s(c_y)), 
+                        (s(c_x - 6), s(c_y - 4)), 
+                        (s(c_x - 6), s(c_y + 4))
+                    ], fill="#555555")
+
+            # --- 4. Save and Log ---
+            
+            # Save the file with standard metadata
+            img.save(base_img_path, "PNG", dpi=(300*scale, 300*scale))
             
             log_path = os.path.join(app_dir, f"{proj_name}.changelog")
             with open(log_path, "a") as log_file:
@@ -363,8 +459,11 @@ class ProjectTab(tk.Frame):
                     end_date = task["start"] + timedelta(days=task["days"])
                     log_file.write(f"- {task['name']}: {task['start'].strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}\n")
                 log_file.write("\n")
-            messagebox.showinfo("Success", f"'{proj_name}.png' saved!\nAutomatically cropped to content.", parent=self)
-        except Exception as e: messagebox.showerror("Error", f"Failed to export:\n{e}", parent=self)
+                
+            messagebox.showinfo("Success", f"'{proj_name}.png' saved!\nGenerated natively at {scale}x resolution.", parent=self)
+            
+        except Exception as e: 
+            messagebox.showerror("Error", f"Failed to export:\n{e}", parent=self)
 
     # --- Core Chart Logic ---
     def update_dates(self):
