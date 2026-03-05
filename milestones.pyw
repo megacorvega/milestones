@@ -264,9 +264,15 @@ class ProjectTab(tk.Frame):
 
     def save_project(self):
         if not self.file_path:
+            # --- New: Ensure 'projects' directory exists ---
+            projects_dir = os.path.join(self.get_app_dir(), "projects")
+            if not os.path.exists(projects_dir):
+                os.makedirs(projects_dir)
+            # -----------------------------------------------
+                
             self.file_path = filedialog.asksaveasfilename(
                 parent=self,
-                initialdir=self.get_app_dir(),
+                initialdir=projects_dir, # Changed to projects_dir
                 initialfile=self.get_clean_project_name() + ".projects",
                 defaultextension=".projects", 
                 filetypes=[("Project Files", "*.projects"), ("All Files", "*.*")]
@@ -275,8 +281,8 @@ class ProjectTab(tk.Frame):
         
         self.autosave()
         messagebox.showinfo("Success", "Project saved successfully!", parent=self)
-        self.app.save_session()  
-
+        self.app.save_session()
+ 
     def load_from_file(self, path):
         try:
             with open(path, 'r') as f: data = json.load(f)
@@ -316,6 +322,70 @@ class ProjectTab(tk.Frame):
         except Exception as e:
             messagebox.showerror("Error", f"Failed to load {path}:\n{e}", parent=self)
 
+    def get_work_days_diff(self, orig_date, new_date):
+        """Returns the number of weekdays between orig_date and new_date.
+        Positive if new_date is after orig_date, negative if before."""
+        if orig_date.date() == new_date.date():
+            return 0
+            
+        days = 0
+        if new_date > orig_date:
+            curr = orig_date + timedelta(days=1)
+            while curr.date() <= new_date.date():
+                if curr.weekday() < 5: # 0-4 are Mon-Fri
+                    days += 1
+                curr += timedelta(days=1)
+            return days
+        else:
+            curr = new_date + timedelta(days=1)
+            while curr.date() <= orig_date.date():
+                if curr.weekday() < 5:
+                    days += 1
+                curr += timedelta(days=1)
+            return -days
+
+    def get_historical_end_dates(self):
+        """Parses the changelog to find all previous end dates for tasks."""
+        proj_name = self.get_clean_project_name()
+        app_dir = self.get_app_dir()
+        log_path = os.path.join(app_dir, "changelogs", f"{proj_name}.changelog")
+        
+        history = {}
+        if not os.path.exists(log_path):
+            return history
+            
+        import re
+        with open(log_path, "r") as f:
+            for line in f:
+                line = line.strip()
+                match_new = re.match(r"- \[([^\]]+)\] (.*): \d{4}-\d{2}-\d{2} to (\d{4}-\d{2}-\d{2})", line)
+                match_old = re.match(r"- (.*): \d{4}-\d{2}-\d{2} to (\d{4}-\d{2}-\d{2})", line)
+                
+                task_id = None
+                end_date_str = None
+                
+                if match_new:
+                    task_id = match_new.group(1)
+                    end_date_str = match_new.group(3)
+                elif match_old:
+                    task_name = match_old.group(1)
+                    end_date_str = match_old.group(2)
+                    for t in self.milestones:
+                        if t["name"] == task_name:
+                            task_id = t["id"]
+                            break
+                            
+                if task_id and end_date_str:
+                    try:
+                        end_date = datetime.strptime(end_date_str, "%Y-%m-%d")
+                        if task_id not in history:
+                            history[task_id] = {'dates': set(), 'original': end_date}
+                        history[task_id]['dates'].add(end_date)
+                    except ValueError:
+                        pass
+                        
+        return history
+    
     def export_png(self):
         if Image is None:
             messagebox.showerror("Missing Library", "The 'Pillow' library is required to export images.", parent=self)
@@ -326,8 +396,14 @@ class ProjectTab(tk.Frame):
 
         proj_name = self.get_clean_project_name()
         app_dir = self.get_app_dir()
-        base_img_path = os.path.join(app_dir, f"{proj_name}.png")
-        archive_dir = os.path.join(app_dir, "archive")
+        
+        # --- Route images and archives to 'exports' folder ---
+        exports_dir = os.path.join(app_dir, "exports")
+        if not os.path.exists(exports_dir):
+            os.makedirs(exports_dir)
+            
+        base_img_path = os.path.join(exports_dir, f"{proj_name}.png")
+        archive_dir = os.path.join(exports_dir, "archive")
         
         if os.path.exists(base_img_path):
             if not os.path.exists(archive_dir): os.makedirs(archive_dir)
@@ -385,6 +461,8 @@ class ProjectTab(tk.Frame):
                 draw.line([(s(today_x), s(20 + y_shift)), (s(today_x), s(height))], fill="#d9534f", width=int(s(2)))
                 draw.text((s(today_x), s(height - 10)), "Today", font=font_small, fill="#d9534f", anchor="mm")
 
+            historical_dates = self.get_historical_end_dates()
+
             task_coords = {}
             y_offset = 80
             for idx, task in enumerate(self.milestones):
@@ -407,7 +485,7 @@ class ProjectTab(tk.Frame):
                     cy = y_offset + self.row_height / 2
                     
                     if task_type == "milestone":
-                        cx = x1 + 5 + 14 # Match padding from draw_chart
+                        cx = x1 + 5 + 14 
                         x2 = cx + 14
                         points = []
                         for i in range(10):
@@ -416,7 +494,7 @@ class ProjectTab(tk.Frame):
                             points.append((s(cx + r * math.cos(angle)), s(cy + r * math.sin(angle))))
                         draw.polygon(points, fill=task["color"], outline="black")
                     elif task_type == "completion":
-                        pole_x = x1 + 5 # Match padding from draw_chart
+                        pole_x = x1 + 5 
                         x2 = pole_x + 18
                         pole_y_top = cy - 14
                         pole_y_bot = cy + 14
@@ -424,7 +502,29 @@ class ProjectTab(tk.Frame):
                         draw.polygon([(s(pole_x), s(pole_y_top)), (s(pole_x + 18), s(cy - 4)), (s(pole_x), s(cy + 2))], fill=task["color"], outline="black")
                 
                 task_end_date = task["start"] + timedelta(days=task["days"])
-                draw.text((s(x2 + 8), s(y_offset + self.row_height/2)), task_end_date.strftime("%m/%d/%y"), font=font_normal, fill="#555", anchor="lm")
+                date_str = task_end_date.strftime("%m/%d/%y")
+                draw.text((s(x2 + 8), s(y_offset + self.row_height/2)), date_str, font=font_normal, fill="#555", anchor="lm")
+
+                # --- Calculate and draw (+/- #) working days variance ---
+                if task["id"] in historical_dates:
+                    orig_date = historical_dates[task["id"]]["original"]
+                    diff = self.get_work_days_diff(orig_date, task_end_date)
+                    if diff != 0:
+                        sign = "+" if diff > 0 else ""
+                        color = "#d9534f" if diff > 0 else "#5cb85c" 
+                        
+                        date_w = draw.textlength(date_str, font=font_normal)
+                        var_x = x2 + 8 + (date_w / scale) + 4
+                        
+                        draw.text((s(var_x), s(y_offset + self.row_height/2)), f"({sign}{diff})", font=font_normal, fill=color, anchor="lm")
+
+                    # --- Draw the historical red lines ---
+                    for past_date in historical_dates[task["id"]]["dates"]:
+                        if past_date != task_end_date:
+                            exact_past_days = (past_date - self.start_date).total_seconds() / 86400.0
+                            hx = chart_x + (exact_past_days * pixels_per_day)
+                            if chart_x <= hx <= chart_x + chart_width:
+                                draw.line([(s(hx), s(y_offset)), (s(hx), s(y_offset + self.row_height))], fill="red", width=int(s(2)))
 
                 task_coords[task["id"]] = {"x1": x1, "x2": x2, "y1": y_offset + 5, "y2": y_offset + self.row_height - 5}
                 y_offset += self.row_height
@@ -448,21 +548,32 @@ class ProjectTab(tk.Frame):
                         (s(c_x - 6), s(c_y + 4))
                     ], fill="#555555")
 
+            # --- Add Export Timestamp ---
+            export_time_str = datetime.now().strftime("Exported: %Y-%m-%d %H:%M")
+            draw.text((s(width - 15), s(height - 10)), export_time_str, font=font_small, fill="#888", anchor="rm")
+            # ----------------------------
+
             img.save(base_img_path, "PNG", dpi=(300*scale, 300*scale))
             
-            log_path = os.path.join(app_dir, f"{proj_name}.changelog")
+            # --- Route changelogs to 'changelogs' folder ---
+            changelogs_dir = os.path.join(app_dir, "changelogs")
+            if not os.path.exists(changelogs_dir):
+                os.makedirs(changelogs_dir)
+                
+            log_path = os.path.join(changelogs_dir, f"{proj_name}.changelog")
+            
             with open(log_path, "a") as log_file:
                 log_file.write(f"--- Export Triggered: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ---\n")
                 for task in self.milestones:
                     end_date = task["start"] + timedelta(days=task["days"])
-                    log_file.write(f"- {task['name']}: {task['start'].strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}\n")
+                    log_file.write(f"- [{task['id']}] {task['name']}: {task['start'].strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}\n")
                 log_file.write("\n")
                 
-            messagebox.showinfo("Success", f"'{proj_name}.png' saved!\nGenerated natively at {scale}x resolution.", parent=self)
+            messagebox.showinfo("Success", f"'{proj_name}.png' saved to /exports!\nGenerated natively at {scale}x resolution.", parent=self)
             
         except Exception as e: 
             messagebox.showerror("Error", f"Failed to export:\n{e}", parent=self)
- 
+    
     # --- Core Chart Logic ---
     def update_dates(self):
         try:
@@ -529,6 +640,8 @@ class ProjectTab(tk.Frame):
             self.canvas.create_line(today_x, 20 + y_shift, today_x, height, fill="#d9534f", dash=(2, 2), width=2)
             self.canvas.create_text(today_x, height - 10, text="Today", fill="#d9534f", font=("Arial", 8, "bold"))
 
+        historical_dates = self.get_historical_end_dates()
+
         task_coords = {}
         y_offset = 80
         for idx, task in enumerate(self.milestones):
@@ -554,18 +667,18 @@ class ProjectTab(tk.Frame):
                 cy = y_offset + self.row_height / 2
                 
                 if task_type == "milestone":
-                    cx = x1 + 5 + 14 # Add 5px padding past the arrow tip
+                    cx = x1 + 5 + 14 
                     x2 = cx + 14
                     
                     points = []
                     for i in range(10):
                         angle = i * math.pi / 5 - math.pi / 2
-                        r = 14 if i % 2 == 0 else 5.35 # Fixed inner radius of 5.35 forces perfectly flat top lines
+                        r = 14 if i % 2 == 0 else 5.35 
                         points.extend([cx + r * math.cos(angle), cy + r * math.sin(angle)])
                     self.canvas.create_polygon(points, fill=task["color"], outline="black", 
                                                tags=("drag_target", f"task_{idx}", f"task_{idx}_drag"))
                 elif task_type == "completion":
-                    pole_x = x1 + 5 # Add 5px padding past the arrow tip
+                    pole_x = x1 + 5 
                     x2 = pole_x + 18
                     
                     pole_y_top = cy - 14
@@ -577,9 +690,28 @@ class ProjectTab(tk.Frame):
                                                tags=("drag_target", f"task_{idx}", f"task_{idx}_drag"))
 
             task_end_date = task["start"] + timedelta(days=task["days"])
-            self.canvas.create_text(x2 + 8, y_offset + self.row_height/2, text=task_end_date.strftime("%m/%d/%y"), anchor=tk.W, font=("Arial", 9), fill="#555", tags=("date_text", f"date_{idx}"))
+            date_text_id = self.canvas.create_text(x2 + 8, y_offset + self.row_height/2, text=task_end_date.strftime("%m/%d/%y"), anchor=tk.W, font=("Arial", 9), fill="#555", tags=("date_text", f"date_{idx}"))
 
-            # task_coords["x1"] remains the true start date so the arrows route perfectly up to it
+            # --- Calculate and draw (+/- #) working days variance ---
+            if task["id"] in historical_dates:
+                orig_date = historical_dates[task["id"]]["original"]
+                diff = self.get_work_days_diff(orig_date, task_end_date)
+                if diff != 0:
+                    sign = "+" if diff > 0 else ""
+                    color = "#d9534f" if diff > 0 else "#5cb85c" # Red for late, Green for early
+                    
+                    bbox = self.canvas.bbox(date_text_id)
+                    var_x = bbox[2] + 4
+                    self.canvas.create_text(var_x, y_offset + self.row_height/2, text=f"({sign}{diff})", anchor=tk.W, font=("Arial", 9, "bold"), fill=color)
+
+                # --- Draw the historical red lines ---
+                for past_date in historical_dates[task["id"]]["dates"]:
+                    if past_date != task_end_date:
+                        exact_past_days = (past_date - self.start_date).total_seconds() / 86400.0
+                        hx = self.chart_x + (exact_past_days * self.pixels_per_day)
+                        if self.chart_x <= hx <= self.chart_x + self.chart_width:
+                            self.canvas.create_line(hx, y_offset, hx, y_offset + self.row_height, fill="red", width=2, tags=("history_line", f"hist_{idx}"))
+
             task_coords[task["id"]] = {"x1": x1, "x2": x2, "y1": y_offset + 5, "y2": y_offset + self.row_height - 5}
             y_offset += self.row_height
             
@@ -594,8 +726,8 @@ class ProjectTab(tk.Frame):
                 points = [p_x, p_y, p_x, c_y, c_x, c_y] if c_y >= p_y else [p_x, p_y, p_x, p_y + 10, c_x - 15, p_y + 10, c_x - 15, c_y, c_x, c_y]
                 self.canvas.create_line(*points, arrow=tk.LAST, fill="#555555", width=2, joinstyle=tk.MITER)
 
-        self.canvas.config(scrollregion=(0, 0, width, y_offset + 50))    
-
+        self.canvas.config(scrollregion=(0, 0, width, y_offset + 50))
+  
     # --- Mouse Events ---
     def on_hover(self, event):
         item = self.canvas.find_withtag("current")
@@ -1059,13 +1191,19 @@ class GanttApp(tk.Tk):
         self.save_session()
 
     def load_project(self):
+        # --- New: Point to 'projects' directory ---
+        projects_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "projects")
+        if not os.path.exists(projects_dir):
+            os.makedirs(projects_dir)
+        # ------------------------------------------
+            
         file_path = filedialog.askopenfilename(
             parent=self,
-            initialdir=os.path.dirname(os.path.abspath(__file__)),
+            initialdir=projects_dir, # Changed to projects_dir
             filetypes=[("Project Files", "*.projects"), ("All Files", "*.*")]
         )
         if file_path: self.open_file_in_tab(file_path)
-
+   
     def open_file_in_tab(self, file_path):
         for tab_id in self.notebook.tabs():
             tab_widget = self.nametowidget(tab_id)

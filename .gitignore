@@ -1,6 +1,9 @@
 # User data
 *.projects
 archive/
+exports/
+projects/
+changelogs/
 session.json
 *.png
 *.changelog
